@@ -1,0 +1,186 @@
+---
+title: "Microred visualization"
+author: "B. Bellotti"
+date: "10/21/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#clear environment
+rm(list = ls()) 
+
+#load packages
+library(ggplot2)
+library(dplyr)
+library(sf)
+library(leaflet)
+```
+
+
+### Load data
+```{r, warning=FALSE, message=FALSE}
+sf.microred <- st_read(here::here("data_minimal", "sf.microred.shp"), quiet=TRUE)
+sf.dist<-st_read(here::here("data_minimal", "microred.shp"), quiet=TRUE)
+
+load(here::here("data_minimal", "df.MR.parms.Rda"))
+
+df.MR.parms <- df.MR.parms%>%
+  rename(Microred = microred)
+
+sf.MR <- left_join(sf.microred, df.MR.parms)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Code to calculate distance matrix based on centroid distance
+
+# ###############################################################################
+# #Euclidean distance between microred centroids
+# ###############################################################################
+# #Calculate centroids
+# sf.micro_center <- sf.microred %>%
+#   st_centroid()
+# 
+# #calculate euclidean distance between centroids
+# euc_dist <- st_distance(sf.micro_center, sf.micro_center)%>%
+#   units::drop_units()%>% #units = meters
+#   as.data.frame()
+# 
+# colnames(euc_dist) <- sf.micro_center$Microred
+# 
+# 
+# #save contact matrix
+# df.MR.contact <- euc_dist
+# rownames(df.MR.contact) <-sf.micro_center$Microred
+# save(df.MR.contact, file="~/RabiesLabPeru/modelling_rabies/06_SpatialHeterogeneity/Parameters/df.MR.contact.Rda")
+# 
+# euc_dist$Micro1 <- sf.micro_center$Microred
+# 
+# euc_dist <- euc_dist %>%
+#   tidyr::pivot_longer(!Micro1, names_to = "Micro2", values_to = "dist")
+# 
+# 
+# #remove duplicates
+# #not elegant ... find better way to do this
+# loop_names <- NULL
+# loop_list <- NULL
+# 
+# for (i in 1:nrow(euc_dist)){
+#   sub <- euc_dist[i,]
+#   name1 <- paste0(sub$Micro1, " : ", sub$Micro2)
+#   name2 <- paste0(sub$Micro2, " : ", sub$Micro1)
+# 
+#   if(name2 %in% loop_names == FALSE){
+#     loop_list <- rbind(loop_list, sub)
+#   }
+# 
+#   loop_names <- rbind(loop_names, name1)
+# }
+# 
+# dist_list <- loop_list %>%
+#   filter(dist > 0) %>%
+#   mutate(inv_dist = 1/dist)%>%
+#   mutate(norm_dist = inv_dist/max(inv_dist))
+# 
+# ####Add vertex points######
+# #get coords
+# sf.micro_center$lon <- st_coordinates(sf.micro_center)[,1]
+# sf.micro_center$lat <- st_coordinates(sf.micro_center)[,2]
+# 
+# #Micro1
+# centroids <- sf.micro_center%>%
+#   st_drop_geometry()%>%
+#   select(Microred, lon, lat)%>%
+#   rename(Micro1 = Microred, lon1 =lon, lat1 =lat)
+# dist_list <- left_join(dist_list, centroids)
+# 
+# #Micro2
+# centroids <- centroids%>%
+#   rename(Micro2 = Micro1, lon2 =lon1, lat2 =lat1)
+# dist_list <- left_join(dist_list, centroids)
+# 
+# 
+# ####Specify edges######
+# sf.dist <- NULL
+# for (i in 1:nrow(dist_list)){
+#   sub <- dist_list[i,]
+#   line = data.frame(X= c(sub$lon1, sub$lon2),
+#                     Y = c(sub$lat1, sub$lat2))
+# 
+#   line <- line%>%
+#     st_as_sf(coords=c("X","Y"))%>%
+#     st_combine()%>%
+#     st_cast("LINESTRING")%>%
+#     st_set_crs(st_crs(sf.microred))%>%
+#     st_as_sf()%>%
+#     rename(geometry = x)
+# 
+#   sub$geometry <- line$geometry
+#   sf.dist <- rbind(sf.dist, sub)
+# }
+# 
+# sf.dist <- sf.dist %>%
+#   st_as_sf()
+
+# st_write(sf.dist, "~/RabiesLabPeru/modelling_rabies/06_SpatialHeterogeneity/Parameters/microred.shp")
+```
+
+
+### Visualize microreds
+
+```{r}
+
+pal <- colorBin("YlOrRd", domain = sf.MR$N, 
+                bins = c(0, 7500, 15000, 30000, 60000))
+
+leaflet() %>%
+  setView(lng = -71.54, lat = -16.41, zoom = 11)%>% #center in AQP
+  addProviderTiles(providers$CartoDB.Positron)%>% # add third party provider tile
+  addPolygons(data=sf.MR, color = "black", fillOpacity = 0.75, fillColor = ~pal(N))%>%
+  addScaleBar()%>%
+  addLegend("bottomright", data= sf.MR,
+              pal=pal,
+              values=~N,    
+              title = 'Dog population estimates',
+              opacity = 0.8)
+
+
+```
+
+### Inverse distance from centroid
+```{r, message=FALSE, warning=FALSE}
+### visuaize ########
+pal <- colorNumeric(
+  palette = "Blues",
+  domain = sf.dist$dist,
+  reverse=TRUE)
+
+
+leaflet() %>%
+  setView(lng = -71.54, lat = -16.41, zoom = 11)%>% #center in AQP
+  addProviderTiles(providers$CartoDB.Positron)%>% # add third party provider tile
+  addPolygons(data=sf.microred, color= "black", fill=NA)%>%
+  addPolylines(data=sf.dist, color=~pal(dist))%>%
+  addScaleBar()
+```
+
+
+### Dog density frequency histogram
+```{r, warning=FALSE, message=FALSE}
+sf_use_s2(FALSE)
+sf.MR$area = st_area(sf.MR)/1e+6 #units = km^2
+sf.MR <- sf.MR %>%
+  mutate(density = N/area)%>%
+  units::drop_units()
+
+ggplot()+
+  theme_classic()+
+  theme(text=element_text(size=24))+
+  geom_histogram(data=sf.MR, aes(x= density), bins=8, color="black", fill="gray")+
+  xlab("Dog density per sq. km") + ylab("Number of microreds")
+
+```

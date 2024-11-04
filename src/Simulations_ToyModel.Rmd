@@ -1,0 +1,868 @@
+---
+title: "Simulations_ToyModel"
+author: "B. Raynor"
+date: "3/27/2023"
+output: html_document
+---
+
+## Set up
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.path="figure")
+```
+
+Load packages, functions, data
+
+```{r, message=FALSE, warning=FALSE}
+#clear environment
+rm(list = ls()) 
+
+#load required packages
+library(ggplot2)  #pretty figures
+library(dplyr)    #tidy code
+library(ggpubr)   #plot arrangement
+
+source(here::here("R", "Functions_StochasticModels.R"))
+source(here::here("R", "Functions_StochasticSimulationVisualization.R"))
+
+#parameters
+parms <- data.frame( 
+  patch = c("Patch 1", "Patch 2", "Patch 3"),
+  b= c(10,10,10),
+  beta = c(0.001, 0.001, 0.001),
+  mu = c(1/5000, 1/5000, 1/5000),
+  alpha = c(1/3, 1/3, 1/3),
+  nu1 = c(0,0,0),
+  gamma = c(1/2, 1/2, 1/2),
+  N = c(1000, 1000, 1000),
+  current_infect = c(1,1,1))
+
+knitr::kable(parms %>% select(-current_infect))
+
+```
+
+**Table:** Synthetic parameters used to explore general SEIV model
+
+Initialize SDEs
+```{r}
+num_patch = length(parms$patch)
+
+#initial conditions 
+init <- data.frame(S=0.5*parms$N - 10*parms$current_infect,
+                   E= rep(0,num_patch),
+                   I= 10*parms$current_infect,
+                   V= 0.5*parms$N)
+
+#time series
+num_years = 3
+Time = 365*num_years #End time
+dt = 1 #Step size dt
+
+#How many simulations we want to average
+sim=100
+
+#pulse vax
+vax0= matrix(0, Time/dt, num_patch)
+
+```
+
+## PART A: 3 patches all connected
+
+```{r}
+#contact matrix
+df.contact <-data.frame(patch1 = c(0,1,1), patch2= c(1,0,1), patch3 =c(1,1,0))
+beta.contact_constant = 0.00001 
+beta.contact = rfun.FormatContact(df.contact, beta.contact_constant)
+
+```
+
+Sim 1: Single pulse, all vaccinated
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(100, (100+365), (100+2*365)),] = c(rep(0.7, num_patch)) #
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+#assess time to elimination
+
+df.system_elimination <- data.frame(avg_time_elimination = NULL, percent_elim = NULL)
+
+
+rfun_EliminationTime <- function(out){
+  df <- out %>% 
+    select(starts_with("I"), time, sim)%>% 
+    tidyr::pivot_longer(cols=!c(time, sim), names_to="patch")%>%
+    filter(value != 0)%>%
+    group_by(sim, patch)%>%
+    summarize(last_case= max(time))%>%
+    ungroup()%>%
+    mutate(elim_patch = ifelse(last_case == 1095, 1, 0))
+  
+  df.elim <- df %>% #only for patches that do get eliminated
+    group_by(sim)%>%
+    summarise(elim_system = sum(elim_patch))%>%
+    filter(elim_system == 0)
+  
+  num_elim = nrow(df.elim)
+    
+  
+  df <- df %>%
+    filter(elim_patch == 0)%>%
+    group_by(patch)%>%
+    summarise(mean = round(mean(last_case),0),
+              SI_2.5 = round(quantile(last_case, .025),0),
+              SI_97.5 = round(quantile(last_case, .975),0),
+              num_sim=n())
+  
+  df.system_elimination <<- rbind(df.system_elimination, c(max(df$mean), num_elim/sim))
+
+  
+  return(knitr::kable(df))
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 2: Staggered pulse, all vaccinated (patch 1 --\> patch 2 --\> patch 3)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 3: Staggered pulse, all vaccinated (patch 2 --\> patch 1 --\> patch 3)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 4: Instant pulse, 2 vaccinated (70%), 1 (patch 1) vaccinated (30%)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 5: Instant pulse, 2 vaccinated (70%), 1 (patch 2) vaccinated (30%)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 6: Staggered pulse, all vaccinated (patch 1 (70%) --\> patch 2 (30%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.3, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 7: Staggered pulse, all vaccinated (patch 2 (70%) --\> patch 1 (30%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.3, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 8: Staggered pulse, all vaccinated (patch 1 (30%) --\> patch 2 (70%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 9: Staggered pulse, all vaccinated (patch 2 (30%) --\> patch 1 (70%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+## PART B: 3 patches: patch 1 \<-\> patch 2 \<-\> patch 3
+
+```{r}
+#contact matrix
+df.contact <-data.frame(patch1 = c(0,1,0), patch2= c(1,0,1), patch3 =c(0,1,0))
+beta.contact_constant = 0.00001 
+beta.contact = rfun.FormatContact(df.contact, beta.contact_constant)
+
+```
+
+Sim 1: Single pulse, all vaccinated
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(100, (100+365), (100+2*365)),] = c(rep(0.7, num_patch)) #
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 2: Staggered pulse, all vaccinated (patch 1 --\> patch 2 --\> patch 3)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 3: Staggered pulse, all vaccinated (patch 1 --\> patch 3 --\> patch 2)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 3] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 2] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 4: Staggered pulse, all vaccinated (patch 2 --\> patch 1 --\> patch 3)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 5: Instant pulse, 2 vaccinated (70%), 1 (patch 1) vaccinated (30%)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 6: Instant pulse, 2 vaccinated (70%), 1 (patch 2) vaccinated (30%)
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 7: Staggered pulse, all vaccinated (patch 1 (70%) --\> patch 2 (30%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.3, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 8: Staggered pulse, all vaccinated (patch 2 (70%) --\> patch 1 (30%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.3, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 9: Staggered pulse, all vaccinated (patch 1 (30%) --\> patch 2 (70%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 10: Staggered pulse, all vaccinated (patch 2 (30%) --\> patch 1 (70%) --\> patch 3 (70%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.3, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.7, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 11: Staggered pulse, all vaccinated (patch 1 (70%) --\> patch 2 (70%) --\> patch 3 (30%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.3, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+Sim 12: Staggered pulse, all vaccinated (patch 2 (70%) --\> patch 1 (70%) --\> patch 3 (30%))
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(123)
+
+#set up VANCAN pulse schedules
+vax <- vax0
+vax[c(50, (50+365), (50+2*365)), 2] = c(rep(0.7, num_patch)) #
+vax[c(100, (100+365), (100+2*365)), 1] = c(rep(0.7, num_patch)) #
+vax[c(150, (150+365), (150+2*365)), 3] = c(rep(0.3, num_patch)) #
+
+
+#save simulations together in a big df
+out <- NULL
+for(i in 1:sim){
+  sub <-  rfun.PatchSEIV(init, parms, beta.contact, vax, Time, dt)%>%
+    mutate(sim = i)
+  out <- rbind(out, sub)
+}
+
+rfun_RabiesDynamics(out, parms$patch)
+rfun_EliminationTime(out)
+
+```
+
+```{r, echo=FALSE, fig.width=12, fig.height=6, warning=FALSE, message=FALSE}
+ggarrange(plotlist=fig1, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+ggarrange(plotlist=fig2, ncol=3, nrow=ceiling(num_patch/2), common.legend = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=4, echo=FALSE, warning=FALSE, message=FALSE}
+fig3
+```
+
+
+Compare systems
+
+
+```{r, warning=FALSE, message=FALSE}
+colnames(df.system_elimination) = c("Avg_time_elim", "Percent_elim")
+
+df.sys <- df.system_elimination %>%
+  mutate(Scenario = seq(1:length(Percent_elim)))%>%
+  select(Scenario, Percent_elim, Avg_time_elim)
+
+
+knitr::kable(df.sys)
+```

@@ -1,0 +1,371 @@
+---
+title: "Bayes Hierarchical Model"
+author: "Brinkley Raynor"
+date: "4/29/2022"
+output:
+  html_document: default
+  pdf_document: default
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.path="figure")
+```
+
+## Data  
+The data here is extracted dates from focus control reports. These are the reports ascertaining the epidemiologic history of positive canine rabies cases.For the purposes of this analysis, infectious period (CullLag) is defined as the time between initial signs onset and death. 
+```{r, message=FALSE, warning=FALSE}
+#clean environment
+rm(list = ls())
+
+#call packages
+library(dplyr) #tidy coding
+library(ggplot2) #pretty figures
+
+#Read in data
+df.fc<- readRDS(here::here("data_minimal", "DeathTime.Rda"))
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4}
+fig1 <- ggplot()+
+  theme_classic()+
+  geom_boxplot(data=df.fc, aes(x=District, y=CullLag), fill='lightgray')+ 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  ylab("Infectious Period (days)") 
+fig1
+```  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 1: Boxplot visualization of infectious period (dog euthanasia date - initial rabies signs date) distribution by district**  
+
+## Model formulation  
+Observations $y_ij$ were modeled as a hierarchical model where there are $i$ observations in each $j$ district of $y$ observed days taken to euthanize detected rabid dogs. The district means, $mu_j$ are modeled as gamma distributed with information sharing between districts. 
+
+### Gibbs Sampler  
+```{r, message=FALSE, warning=FALSE}
+set.seed(123)
+#GIBBS SAMPLER FUNCTION
+fun.gibbs <- function(numsamp, sigsq, tausq, mu0, df){
+  df.fc <- df
+  
+  #Format data 
+  df.district = df.fc %>% dplyr::select(id, District, CullLag)%>%
+    group_by(District) %>%
+    summarise(mean = mean(CullLag, na.rm=TRUE), n = n())
+  
+  #Calculate statistics
+  means=df.district$mean
+  n=df.district$n
+  m <- length(means)
+  ntot <- sum(n)
+  
+  #Set up frames to hold data
+  sigsq.samp <- rep(NA,numsamp)
+  tausq.samp <- rep(NA,numsamp)
+  mu0.samp <- rep(NA,numsamp)
+  mu.samp <- matrix(NA,nrow=numsamp,ncol=m)
+  mu <- rep(NA,m)
+
+  #Gibbs sampler
+  for (i in 1:numsamp){
+     # sampling mu's
+     for (j in 1:m){
+  	  curvar <- 1/(n[j]/sigsq + 1/tausq)
+     	  curmean <- (means[j]*n[j]/sigsq + mu0/tausq)*curvar
+     	  mu[j] <- rnorm(1,mean=curmean,sd=sqrt(curvar))
+     }
+    
+     # sampling mu0
+     #mu0 <- rnorm(1,mean=mean(mu),sd=sqrt(tausq/m))
+     mu0 <- rgamma(1,shape=sqrt(tausq/m), rate=sqrt(tausq/m)/mean(mu))
+
+    # sampling tausq
+     sumsq.mu <- sum((mu-mu0)^2)
+     tausqinv <- rgamma(1,shape=((m-1)/2),rate=(sumsq.mu/2))
+     tausq <- 1/tausqinv
+     # sampling sigsq
+     sumsq.y <- 0
+     for (j in 1:m){
+        district <- df.district$District[j]
+        y <- df.fc%>% filter(District == district)%>%select(CullLag)%>%na.omit()
+        sumsq.y <- sumsq.y + sum((y-mu[j])^2)
+     }
+      sigsqinv <- rgamma(1,shape=(ntot/2),rate=(sumsq.y/2))
+
+      sigsq <- (1/sigsqinv)
+      
+
+
+     # storing sampled values
+     mu.samp[i,] <- mu
+     mu0.samp[i] <- mu0
+     tausq.samp[i] <- tausq
+     sigsq.samp[i] <- sigsq
+  }
+  
+  #store to global env
+  mu.samp <<- mu.samp
+  parm.samp <<- data.frame(mu0.samp = mu0.samp,
+                          tausq.samp = tausq.samp,
+                          sigsq.samp = sigsq.samp)
+
+}
+
+```
+
+## Model implementation  
+To implement a Gibbs sampler, starting values of $\mu_0$, $\tau^2$, $\sigma^2$ were arbitrarily selected and then these parameters as well as $\mu_j$ were iteratively updated.  
+
+### Confirm convergence
+Two chains were run with different arbitrary starting parameters (chain 1: $\mu_0 = 1, \tau^2 =1, \sigma^2 = 1$, chain2:$\mu_0 = 20, \tau^2 =10, \sigma^2 = 10$) and plotted to check that chains converge (Figure 3). For all parameters, the two chains did converge.   
+
+```{r, warning=FALSE, message=FALSE}
+#RUN GIBBS SAMPLER 
+#function: fun.gibbs(numsamp, sigsq, tausq, mu0, df)
+fun.gibbs(1000, 1, 1, 1, df.fc); mu.samp1 <- mu.samp; parm.samp1 <- parm.samp #first chain
+fun.gibbs(1000, 10, 10, 20, df.fc); mu.samp2 <- mu.samp; parm.samp2 <- parm.samp #second chain
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+##############################################################################
+#DEAL WITH BURN IN
+##############################################################################
+#function to plot convergence check 
+fun.ConvPlot <- function(data1, data2, plot_title){
+  fig <- ggplot()+
+    theme_classic()+
+    theme(text = element_text(size = 20))+
+    geom_line(aes(x=seq(1:length(data1)), y=data1), color="red3", alpha=0.6)+
+    geom_line(aes(x=seq(1:length(data2)), y=data2),color="dodgerblue3", alpha=0.6)+
+    ggtitle(plot_title) + xlab(" ") + ylab(" ")
+  return(fig)
+}
+
+#fig3 = look at total samples convergance
+fig2 <- ggpubr::ggarrange(fun.ConvPlot(mu.samp1[,1], mu.samp2[,1], "mu"), 
+                  fun.ConvPlot(parm.samp1$tausq.samp, parm.samp2$tausq.samp, "tau sq"),
+                  fun.ConvPlot(parm.samp1$sigsq.samp, parm.samp2$sigsq.samp, "sigma sq"),
+                  fun.ConvPlot(parm.samp1$mu0.samp, parm.samp2$mu0.samp, "mu0"),  
+                  ncol=2, nrow=2)
+
+fig2
+
+```
+
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 2: Global convergence evaluation.**  
+
+After convergence was confirmed, burn in time was evaluated. The first 100 samples of both chains were plotted to estimate a burn in time (ie time until the chains converge). The first 20 samples were removed as burn in.  
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#fig4 = first 100 iterations for convergence
+fig3<- ggpubr::ggarrange(fun.ConvPlot(mu.samp1[1:100,1], mu.samp2[1:100,1], "mu"), 
+                  fun.ConvPlot(parm.samp1$tausq.samp[1:100], parm.samp2$tausq.samp[1:100], "tau sq"),
+                  fun.ConvPlot(parm.samp1$sigsq.samp[1:100], parm.samp2$sigsq.samp[1:100], "sigma sq"),
+                  fun.ConvPlot(parm.samp1$mu0.samp[1:100], parm.samp2$mu0.samp[1:100], "mu0"),  
+                  ncol=2, nrow=2)
+
+fig3
+```
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 3: Burn in evaluation.**  
+
+```{r, warning=FALSE, message=FALSE}
+### throwing away first 20 as burn-in 
+mu.samp1 <- mu.samp1[21:nrow(mu.samp1),]
+mu.samp2 <- mu.samp2[21:nrow(mu.samp2),]
+parm.samp1 <- parm.samp1[21:nrow(parm.samp1),]
+parm.samp2 <- parm.samp2[21:nrow(parm.samp2),]
+```
+
+### Evaluate and eliminate autocorrelation  
+Both chains were evaluated for autocorrelation.  
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#DEAL WITH AUTOCORRELATION
+#visualize
+fun.autoplot <- function(mu.samp1, mu.samp2, parm.samp1, parm.samp2){
+  #libraries for plots
+  library(ggpubr)
+  library(forecast)
+  
+  #plot
+  ggarrange(ggAcf(mu.samp1[,1])+theme_classic() + ggtitle("mu"),
+            ggAcf(mu.samp2[,1])+theme_classic()+ ggtitle("mu"),
+            ggAcf(parm.samp1$mu0.samp)+theme_classic()+ ggtitle("mu0"),
+            ggAcf(parm.samp2$mu0.samp)+theme_classic()+ ggtitle("mu0"),
+            ggAcf(parm.samp1$tausq.samp)+theme_classic()+ ggtitle("tau sq"),
+            ggAcf(parm.samp2$tausq.samp)+theme_classic()+ ggtitle("tau sq"),
+            ggAcf(parm.samp1$sigsq.samp)+theme_classic()+ ggtitle("sigma sq"),
+            ggAcf(parm.samp2$sigsq.samp)+theme_classic()+ ggtitle("sigma sq"),
+            nrow=4, ncol=2)
+}
+
+#fig5= check acf
+fig4 <- fun.autoplot(mu.samp1, mu.samp2, parm.samp1, parm.samp2)
+fig4
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 4: Initial autocorrelation evaluation.**  
+
+In order to produce independent samples, the chains were thinned to remove autocorrelation: 1 out of every 10 samples was kept. After thinning, autocorrelation was re-evaluatedto ensure non-autocorrelated samples.
+```{r, warning=FALSE, message=FALSE}
+# thinning chains 
+Thin <- 10
+temp <- Thin*c(1:(nrow(mu.samp2)/Thin))
+mu.samp1 <- mu.samp1[temp,]
+mu.samp2 <- mu.samp2[temp,]
+parm.samp1 <- parm.samp1[temp,]
+parm.samp2 <- parm.samp2[temp,]
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+#fig6=recheck acf
+fig5<-fun.autoplot(mu.samp1, mu.samp2, parm.samp1, parm.samp2)
+fig5
+```
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 5: Autocorrelation evaluation after thinning.**  
+
+After thinning, chains were merged into a combined posterior sample set.
+```{r, message=FALSE, warning=FALSE}
+#FINAL SAMPLE
+
+#combine chains
+mu.samp <- rbind(mu.samp1,mu.samp2)
+parm.samp <- rbind(parm.samp1, parm.samp2)
+
+# Calculate statistics
+df.district = df.fc %>% select(id, District, CullLag)%>%
+  group_by(District) %>%
+  summarise(mean = mean(CullLag, na.rm=TRUE), n = n())
+
+df.post <- data.frame(district = df.district$District, 
+                      means=df.district$mean, 
+                      n= df.district$n,
+                      mu.postmean =apply(mu.samp,2,mean), 
+                      mu0.postmean=mean(parm.samp$mu0.samp))%>%
+  mutate(means = round(means, 2),
+         mu.postmean = round(mu.postmean,2))
+```
+
+## Results
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+#Examine histograms
+fun.hist <-function(parm, title){
+  int <- round(quantile(parm, probs=c(0.025, 0.5, 0.975)), 2)
+  fig <- ggplot()+
+    theme_classic()+
+    theme(text = element_text(size = 20))+ scale_y_continuous(expand = c(0, 0))+
+    geom_histogram(aes(x=parm), color="black", fill="lightgray", bins=15)+
+    geom_vline(xintercept=c(int[[1]][1], int[[3]][1]), linetype="dashed", color="dodgerblue1", size=1.5)+
+    geom_vline(xintercept=int[[2]][1], size=1.5, color="dodgerblue1")+
+    # annotate("text", x=int[[3]][1], y=190, label = paste0("mean: ", int[[2]][1]))+
+    # annotate("text", x=int[[3]][1], y=180, label = paste0("95% int: (", int[[1]], ", ", int[[3]][1], ")"))+
+    ggtitle(title) + xlab("sample value") + ylab("count")
+  return(fig)
+}
+
+#Fig7 = histogram of global parms
+fig6 <- ggpubr::ggarrange(fun.hist(parm.samp$mu0.samp, "mu0"),
+                  fun.hist(parm.samp$tausq.samp, "tau sq"),
+                  fun.hist(parm.samp$sigsq.samp, "sigma sq"))
+
+table1 <- data.frame("Parameter" = c("mu0", "sigma sq", "tau sq"),
+                     "Mean" = c(mean(parm.samp$mu0.samp), 
+                                mean(parm.samp$sigsq.samp),
+                                mean(parm.samp$tausq.samp)),
+                     "Lower" = c(quantile(parm.samp$mu0.samp, probs=0.025)[[1]],
+                                 quantile(parm.samp$sigsq.samp, probs=0.025)[[1]],
+                                 quantile(parm.samp$tausq.samp, probs=0.025)[[1]]),
+                     "Upper" = c(quantile(parm.samp$mu0.samp, probs=0.975)[[1]],
+                                 quantile(parm.samp$sigsq.samp, probs=0.975)[[1]],
+                                 quantile(parm.samp$tausq.samp, probs=0.975)[[1]])
+                     )%>%
+  mutate(Mean = round(Mean,2),
+         Lower = round(Lower,2), 
+         Upper = round(Upper,2))
+
+
+# Examining Shrinkage,
+Pal1 <- data.frame(vals =c('Mu posterior mean' = 'red3',
+          'Mu0 posterior mean' = 'dodgerblue3',
+          'Data mean' = 'black'),
+          breaks = c("Mu posterior mean","Mu0 posterior mean","Data mean"))
+
+#Fig 8: shrinkage plot
+fig7 <- ggplot()+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  geom_point(data= df.post, aes(x=district, y=means, color="Data mean"), shape=1, size = 3)+
+  geom_point(data= df.post, aes(x=district, y=mu.postmean, color="Mu posterior mean"), shape=4, size = 3)+
+  geom_point(data= df.post, aes(x=district, y=mu0.postmean, color="Mu0 posterior mean"), size=0.5)+
+  geom_hline(yintercept=df.post$mu0.postmean[1], color="dodgerblue3", size=1)+
+  scale_color_manual(values = Pal1$vals, name= " ", breaks=Pal1$breaks) 
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Table 1: Means and 95% posterior intervals of global parameters**
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(table1)
+```  
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fig6
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 7: Histograms of global parameters**  
+
+The modeled $\mu$'s were then compared to the data means. Due to the hierarchical model nature, the means with less data supporting it, such as the case of the Jose Luis Bustamante y R. district were pulled dramatically towards the global mean, while districts with a lot of data support, such as the district of Cerro Colorado were barely budged. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fig7
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 7: Shrinkage of normal means.**  
+
+&nbsp;  
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Table 2: modeled means versus data means**
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::kable(df.post%>%select(-mu0.postmean), 
+             col.names = c("District",
+                           "Data mean",
+                           "number of observations",
+                           "Posterior mean, $\\mu_j$"))
+```
+
+## Model Evaluation   
+The hierarchical model was evaluated using a Bayesian posterior predictive check. To evaluate whether the observed data look extreme compared to data generated from the model, a test statistic not directly evaluated by the model was selected - max($\mu_j$). The maximum district mean, $\mu_j$, observed was compared to the simulated maximum $\mu_j$'s. The observed maximum is not significantly extreme indicating a reasonable model, especially considering an important property of the hierarchical model is to shrink extreme values that are not supported by a large sample. 
+```{r, message=FALSE, warning=FALSE}
+## Test statistic: max of mu_j from observed data
+test.data <- max(df.district$mean)
+
+# max mu_j's from simulated samples
+max.mu.samp <- NULL
+for(i in 1:nrow(mu.samp)){
+  max <- max(mu.samp[i,])
+  max.mu.samp <- rbind(max.mu.samp, max)
+}
+
+test2.p <- sum(max.mu.samp > test.data)/nrow(mu.samp)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#visualize
+fig8 <- ggplot()+
+  theme_classic()+
+  geom_histogram(aes(x=max.mu.samp), fill="lightgray", color="black", bins=30)+
+  geom_vline(xintercept=test.data, color="red3", size=2)+
+  xlab("Maximum simulated mu")
+fig8
+```
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+**Figure 8: The distribution of simulated maximum $mu_j$ with the observed maximum $mu_j$ indicated by the red line.**
+
